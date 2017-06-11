@@ -1,0 +1,4 @@
+package: github.com/dialogbox/nettools
+import:
+- package: github.com/sparrc/go-ping
+- package: golang.org/x/net

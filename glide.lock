@@ -1,0 +1,16 @@
+hash: b5bd816c84e6a1c73ea078d22df7aebd72c790a2685f119a64f2f81b66d56fb4
+updated: 2017-06-11T10:36:46.545871396+09:00
+imports:
+- name: github.com/sparrc/go-ping
+  version: 416e72114cd1edce2f287648f935a60dfe6cf40e
+- name: golang.org/x/net
+  version: 1a68b1313cf4ad7778376e82641197b60c02f65c
+  subpackages:
+  - bpf
+  - icmp
+  - internal/iana
+  - internal/socket
+  - ipv4
+  - ipv6
+  - nettest
+testImports: []
