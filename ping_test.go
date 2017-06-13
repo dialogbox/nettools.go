@@ -1,53 +1,53 @@
 package nettools
 
 import (
+	"fmt"
 	"golang.org/x/net/icmp"
-	"net"
 	"testing"
+	"time"
+	"net"
 )
-//
-//func TestNewPinger(t *testing.T) {
-//	p, err := NewPinger()
-//	if err != nil {
-//		panic(err)
-//	}
-//	defer p.Close()
-//}
-//
-//func TestPing(t *testing.T) {
-//	table := []string{
-//		"127.0.0.1",
-//		"www.google.com",
-//		"www.apple.com",
-//	}
-//
-//	p, err := NewPinger()
-//	if err != nil {
-//		panic(err)
-//	}
-//	defer p.Close()
-//
-//	for i := range table {
-//		go p.Ping(table[i])
-//	}
-//
-//	var wg sync.WaitGroup
-//	wg.Add(len(table))
-//
-//	for range table {
-//		go func() {
-//			defer wg.Done()
-//			peer, rm, err := p.GetPacket()
-//			if err != nil {
-//				panic(err)
-//			}
-//			e := rm.Body.(*icmp.Echo)
-//			fmt.Printf("%v, %v, %v, %v\n", *peer, e.ID, e.Seq, e.Data)
-//		}()
-//	}
-//
-//	wg.Wait()
-//}
+
+func TestNewPinger(t *testing.T) {
+	p, err := NewPinger(3 * time.Second)
+	if err != nil {
+		panic(err)
+	}
+	defer p.Close()
+}
+
+func TestPing(t *testing.T) {
+	table := []string{
+		"127.0.0.1",
+		"www.google.com",
+		"www.apple.com",
+	}
+
+	p, err := NewPinger(3 * time.Second)
+	if err != nil {
+		panic(err)
+	}
+	defer p.Close()
+
+	for i := range table {
+		ip, err := LookupIPAddr(table[i])
+		if err != nil {
+			panic(err)
+		}
+		p.Ping(ip, 1)
+		peer, rm, err := p.GetPacket()
+		if err != nil {
+			panic(err)
+		}
+		e := rm.Body.(*icmp.Echo)
+
+		addr, ts := parsePayload(e.Data)
+
+		if peer != addr.String() {
+			fmt.Printf("%v, %v, %v, %v, %v\n", peer, e.ID, e.Seq, addr, ts)
+		}
+	}
+}
 
 func TestResolveHostList(t *testing.T) {
 	table := []string{
@@ -62,41 +62,34 @@ func TestResolveHostList(t *testing.T) {
 	}
 }
 
-func TestMakeHostDirectory(t *testing.T) {
-	table := []string{
-		"127.0.0.1",
-		"www.google.com",
-		"www.apple.com",
-	}
-
-	iplist := ResolveHostList(table)
-	dir := MakeHostDirectory(iplist)
-	if dir == nil || len(dir) != len(table) {
+func TestNewRequestRegistry(t *testing.T) {
+	r := NewRequestRegistry(10 * time.Second)
+	if r == nil {
 		t.Fail()
 	}
 }
 
-func MakeHostDirectory(iplist []net.IP) []*icmp.Echo {
-	dir := make([]*icmp.Echo, len(iplist))
-	for i := range iplist {
-		dir[i] = NewEchoRequest(iplist[i])
-	}
-	return dir
-}
-
-type Host struct {
-
-}
-
-func ResolveHostList(hosts []string) []net.IP {
-	iplist := make([]net.IP, len(hosts))
-	for i := range hosts {
-		ip, err := LookupIPAddr(hosts[i])
-		if err != nil {
-			panic(err)
-		}
-		iplist[i] = ip
+func TestRegistRequest(t *testing.T) {
+	registry := NewRequestRegistry(10 * time.Second)
+	if registry == nil {
+		t.Fail()
 	}
 
-	return iplist
+	if !registry.Regist(NewEchoRequest(net.ParseIP("127.0.0.1"), 1)) {
+		t.Fail()
+	}
+	if registry.Regist(NewEchoRequest(net.ParseIP("127.0.0.1"), 1)) {
+		t.Fail()
+	}
+	if !registry.Regist(NewEchoRequest(net.ParseIP("127.0.0.1"), 2)) {
+		t.Fail()
+	}
+}
+
+func TestUnregistRequest(t *testing.T) {
+
+}
+
+func TestCleanupRequests(t *testing.T) {
+
 }

@@ -1,17 +1,14 @@
 package nettools
 
 import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 	"log"
 	"net"
 	"time"
-	"golang.org/x/net/icmp"
-	"golang.org/x/net/ipv4"
-	"errors"
-	"sync/atomic"
-	"fmt"
-	"math/rand"
-	"encoding/binary"
-	"os"
 )
 
 
@@ -34,70 +31,55 @@ func LookupIPAddr(host string) (net.IP, error) {
 
 type Pinger struct {
 	Conn *icmp.PacketConn
-	Id uint16
-	seq uint32
 }
 
-func (p *Pinger) Seq() uint16 {
-	for {
-		seq := atomic.AddUint32(&p.seq, 1)
 
-		if seq <= 65535 {
-			return uint16(seq)
-		}
-		atomic.SwapUint32(&p.seq, 0)
-	}
-}
-
-func NewPinger() (*Pinger, error) {
+func NewPinger(timeout time.Duration) (*Pinger, error) {
 	c, err := icmp.ListenPacket("udp4", "")
 	if err != nil {
 		return nil, err
 	}
-	if err := c.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	if err := c.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		panic(err)
 	}
 
-	id := uint16(rand.Intn(65535))
-
-	return &Pinger{Conn: c, Id: id }, nil
+	return &Pinger{Conn: c}, nil
 }
 
-func (p *Pinger) Ping(host string) {
-	ipaddr, err := LookupIPAddr(host)
-	if err != nil {
-		panic(err)
-	}
+func (p *Pinger) Ping(ip net.IP, seq uint16) {
+	r := NewEchoRequest(ip, seq)
+	wm := r.GetPacket()
 
-	wm := NewEchoRequest(ipaddr)
-
-	wb, err := wm.Marshal(ProtocolICMP)
+	wb, err := wm.Marshal(nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if _, err := p.Conn.WriteTo(wb, &net.UDPAddr{IP: ipaddr}); err != nil {
+	if _, err := p.Conn.WriteTo(wb, &net.UDPAddr{IP: ip}); err != nil {
 		panic(err)
 	}
 }
 
-func (p *Pinger) GetPacket() (*net.Addr, *icmp.Message, error) {
+func (p *Pinger) GetPacket() (string, *icmp.Message, error) {
 	rb := make([]byte, 1500)
 	n, peer, err := p.Conn.ReadFrom(rb)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, err
 	}
+
+	peerIP := peer.String()
+	peerIP = peerIP[:len(peerIP)-2]
 
 	rm, err := icmp.ParseMessage(ProtocolICMP, rb[:n])
 	if err != nil {
-		return &peer, nil, err
+		return peerIP, nil, err
 	}
 
 	switch rm.Type {
 	case ipv4.ICMPTypeEchoReply:
-		return &peer, rm, nil
+		return peerIP, rm, nil
 	default:
-		return &peer, nil, fmt.Errorf("got %+v; want echo reply", rm)
+		return peerIP, nil, fmt.Errorf("got %+v; want echo reply", rm)
 	}
 }
 
@@ -105,26 +87,104 @@ func (p *Pinger) Close() {
 	p.Conn.Close()
 }
 
-// Request Registry
+type EchoRequest struct {
+	IP net.IP
+	Id uint16
+	Seq uint16
+	Timestamp time.Time
+
+}
 
 func hash32to16(i uint32) uint16 {
 	return uint16((i >> 16) ^ ((i & 0xffff) * 7))
 }
 
-func NewEchoRequest(ip net.IP) *icmp.Echo {
-	id := hash32to16(uint32(os.Getpid()))
+func NewEchoRequest(ip net.IP, seq uint16) *EchoRequest {
+	id := hash32to16(binary.BigEndian.Uint32(ip[12:16]))
 
-	return &icmp.Echo{
-		ID: int(id), Seq: 1,
-		Data: ip[12:16],
+	return &EchoRequest{
+		ip,
+		id,
+		seq,
+		time.Now(),
 	}
 }
 
+func BuildEchoRequestFromResponse(m *icmp.Message) *EchoRequest {
+	echo := m.Body.(*icmp.Echo)
+	ip, ts := parsePayload(echo.Data)
 
-func NewEchoRequest2(ip net.IP, seq uint16) *icmp.Echo {
-	id := hash32to16(binary.BigEndian.Uint32(ip[12:16]))
-	return &icmp.Echo{
-		ID: int(id), Seq: int(seq),
-		Data: ip[12:16],
+	return &EchoRequest{
+		ip,
+		uint16(echo.ID),
+		uint16(echo.Seq),
+		ts,
 	}
+}
+
+func (r *EchoRequest) GetPacket() *icmp.Message {
+	payload := encodePayload(r.IP, r.Timestamp)
+
+	return &icmp.Message{
+		Type: ipv4.ICMPTypeEcho, Code: 0,
+		Body: &icmp.Echo{
+			ID:   int(r.Id), Seq: int(r.Seq),
+			Data: payload,
+		},
+	}
+}
+
+func (r *EchoRequest) String() string {
+	return fmt.Sprintf("%v:%v:%v", r.IP, r.Id, r.Seq)
+}
+
+func ResolveHostList(hosts []string) []net.IP {
+	iplist := make([]net.IP, len(hosts))
+	for i := range hosts {
+		ip, err := LookupIPAddr(hosts[i])
+		if err != nil {
+			panic(err)
+		}
+		iplist[i] = ip
+	}
+
+	return iplist
+}
+
+
+func parsePayload(payload []byte) (net.IP, time.Time) {
+	var ip [4]byte
+
+	copy(ip[:], payload[0:4])
+
+	ts := time.Unix(0, int64(binary.BigEndian.Uint64(payload[4:12])))
+
+	return net.IP(ip[:]), ts
+}
+
+func encodePayload(ip net.IP, ts time.Time) []byte {
+	payload := make([]byte, 12)
+
+	copy(payload[0:4], ip[12:16])
+	binary.BigEndian.PutUint64(payload[4:12], uint64(ts.UnixNano()))
+
+	return payload
+}
+
+type RequestRegistry struct {
+	timeout time.Duration
+	db map[string]bool
+}
+
+func NewRequestRegistry(timeout time.Duration) *RequestRegistry {
+	return &RequestRegistry{timeout, make(map[string]bool)}
+}
+
+func (registry *RequestRegistry) Regist(m *EchoRequest) bool {
+	if registry.db[m.String()] {
+		return false
+	}
+	registry.db[m.String()] = true
+
+	return true
 }
