@@ -10,7 +10,11 @@ import (
 	"sync/atomic"
 	"fmt"
 	"math/rand"
+	"encoding/binary"
+	"os"
 )
+
+
 
 const ProtocolICMP = 1
 const ProtocolIPv6ICMP = 58
@@ -34,12 +38,12 @@ type Pinger struct {
 	seq uint32
 }
 
-func (p *Pinger) Seq() uint32 {
+func (p *Pinger) Seq() uint16 {
 	for {
 		seq := atomic.AddUint32(&p.seq, 1)
 
 		if seq <= 65535 {
-			return seq
+			return uint16(seq)
 		}
 		atomic.SwapUint32(&p.seq, 0)
 	}
@@ -60,21 +64,16 @@ func NewPinger() (*Pinger, error) {
 }
 
 func (p *Pinger) Ping(host string) {
-	wm := icmp.Message{
-		Type: ipv4.ICMPTypeEcho, Code: 0,
-		Body: &icmp.Echo{
-			ID: int(p.Id), Seq: int(p.Seq()),
-			Data: []byte("P"),
-		},
-	}
-	wb, err := wm.Marshal(nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	ipaddr, err := LookupIPAddr(host)
 	if err != nil {
 		panic(err)
+	}
+
+	wm := NewEchoRequest(ipaddr)
+
+	wb, err := wm.Marshal(ProtocolICMP)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	if _, err := p.Conn.WriteTo(wb, &net.UDPAddr{IP: ipaddr}); err != nil {
@@ -104,4 +103,28 @@ func (p *Pinger) GetPacket() (*net.Addr, *icmp.Message, error) {
 
 func (p *Pinger) Close() {
 	p.Conn.Close()
+}
+
+// Request Registry
+
+func hash32to16(i uint32) uint16 {
+	return uint16((i >> 16) ^ ((i & 0xffff) * 7))
+}
+
+func NewEchoRequest(ip net.IP) *icmp.Echo {
+	id := hash32to16(uint32(os.Getpid()))
+
+	return &icmp.Echo{
+		ID: int(id), Seq: 1,
+		Data: ip[12:16],
+	}
+}
+
+
+func NewEchoRequest2(ip net.IP, seq uint16) *icmp.Echo {
+	id := hash32to16(binary.BigEndian.Uint32(ip[12:16]))
+	return &icmp.Echo{
+		ID: int(id), Seq: int(seq),
+		Data: ip[12:16],
+	}
 }

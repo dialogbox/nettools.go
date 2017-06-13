@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/dialogbox/nettools"
+	"golang.org/x/net/icmp"
 )
 
 
@@ -36,7 +37,8 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			fmt.Println(*peer, rm)
+			e := rm.Body.(*icmp.Echo)
+			fmt.Printf("%v, %v, %v, %v\n", *peer, e.ID, e.Seq, e.Data)
 		}()
 	}
 
