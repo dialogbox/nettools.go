@@ -1,4 +1,4 @@
-package nettools
+package pinger
 
 import (
 	"golang.org/x/net/icmp"

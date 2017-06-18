@@ -1,4 +1,4 @@
-package nettools
+package pinger
 
 import (
 	"errors"
