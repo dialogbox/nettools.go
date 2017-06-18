@@ -1,18 +1,19 @@
 package pinger
 
 import (
-	"golang.org/x/net/icmp"
-	"time"
-	"golang.org/x/net/ipv4"
+	"encoding/binary"
 	"fmt"
 	"net"
-	"encoding/binary"
+	"time"
+
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 )
 
 type EchoMessage struct {
-	IP net.IP
-	Id uint16
-	Seq uint16
+	IP        net.IP
+	ID        uint16
+	Seq       uint16
 	Timestamp time.Time
 }
 
@@ -50,13 +51,12 @@ func (r *EchoMessage) ICMPMessage() *icmp.Message {
 	return &icmp.Message{
 		Type: ipv4.ICMPTypeEcho, Code: 0,
 		Body: &icmp.Echo{
-			ID:   int(r.Id), Seq: int(r.Seq),
+			ID: int(r.ID), Seq: int(r.Seq),
 			Data: payload,
 		},
 	}
 }
 
 func (r *EchoMessage) String() string {
-	return fmt.Sprintf("%v:%v:%v", r.IP.String(), r.Id, r.Seq)
+	return fmt.Sprintf("%v:%v:%v", r.IP.String(), r.ID, r.Seq)
 }
-

@@ -3,11 +3,105 @@ package pinger
 import (
 	"errors"
 	"fmt"
-	"golang.org/x/net/icmp"
-	"golang.org/x/net/ipv4"
 	"net"
 	"time"
+
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 )
+
+type Pinger struct {
+	c *icmp.PacketConn
+
+	req    chan *EchoMessage
+	res    chan *EchoMessage
+	sent   chan *EchoMessage
+	report chan *Report
+
+	stopSender   chan struct{}
+	stopReceiver chan struct{}
+	stopReporter chan struct{}
+
+	requesters map[string]chan struct{}
+
+	id        uint16
+	timeout   time.Duration
+	queueSize int
+
+	started bool
+}
+
+func NewPinger(queueSize int, timeout time.Duration) *Pinger {
+	p := &Pinger{
+		requesters: make(map[string]chan struct{}),
+		timeout:    timeout,
+		queueSize:  queueSize,
+		req:        make(chan *EchoMessage, queueSize),
+		res:        make(chan *EchoMessage, queueSize),
+		sent:       make(chan *EchoMessage, queueSize),
+		report:     make(chan *Report, queueSize),
+	}
+
+	return p
+}
+
+func (p *Pinger) Start() chan *Report {
+	p.c = NewSocket()
+	p.stopSender = NewSender(p.c, p.req, p.sent)
+	p.stopReceiver = NewListener(p.c, p.res)
+	p.stopReporter = NewReporter(p.report, p.sent, p.res, p.timeout)
+
+	p.started = true
+
+	return p.report
+}
+
+func (p *Pinger) Stop() {
+	p.started = false
+
+	for _, v := range p.requesters {
+		v <- struct{}{}
+	}
+
+	p.stopReceiver <- struct{}{}
+	p.stopReporter <- struct{}{}
+	p.stopSender <- struct{}{}
+
+	p.c.Close()
+
+	close(p.req)
+	close(p.res)
+	close(p.report)
+	close(p.sent)
+}
+
+func (p *Pinger) AddDest(ip net.IP, interval time.Duration) error {
+	addr := ip.String()
+	_, ok := p.requesters[addr]
+	if ok {
+		return fmt.Errorf("Duplicated address: %v", addr)
+	}
+
+	done := NewRequester(p.req, ip, 1*time.Second)
+	p.requesters[addr] = done
+
+	return nil
+}
+
+func (p *Pinger) DeleteDest(ip net.IP) error {
+	addr := ip.String()
+	_, ok := p.requesters[addr]
+	if !ok {
+		return fmt.Errorf("Not registered address: %v", addr)
+	}
+
+	deleted := p.requesters[addr]
+	delete(p.requesters, addr)
+
+	deleted <- struct{}{}
+
+	return nil
+}
 
 func NewSocket() *icmp.PacketConn {
 	c, err := icmp.ListenPacket("udp4", "")
@@ -60,9 +154,8 @@ func receiveOneMessage(c *icmp.PacketConn, buf []byte) *icmp.Message {
 	return rm
 }
 
-func NewListener(c *icmp.PacketConn, resBufSize int) (chan *EchoMessage, chan struct{}) {
+func NewListener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
 	done := make(chan struct{})
-	res := make(chan *EchoMessage, resBufSize)
 
 	go func() {
 		rb := make([]byte, 1500)
@@ -70,7 +163,6 @@ func NewListener(c *icmp.PacketConn, resBufSize int) (chan *EchoMessage, chan st
 			select {
 			case <-done:
 				close(done)
-				close(res)
 				return
 			default:
 				rm := receiveOneMessage(c, rb)
@@ -82,21 +174,17 @@ func NewListener(c *icmp.PacketConn, resBufSize int) (chan *EchoMessage, chan st
 		}
 	}()
 
-	return res, done
+	return done
 }
 
-func NewSender(c *icmp.PacketConn) (chan *EchoMessage, chan *EchoMessage, chan struct{}) {
+func NewSender(c *icmp.PacketConn, req chan *EchoMessage, sent chan *EchoMessage) chan struct{} {
 	done := make(chan struct{})
-	req := make(chan *EchoMessage, 1000)
-	sent := make(chan *EchoMessage, 1000)
 
 	go func() {
 		for {
 			select {
 			case <-done:
 				close(done)
-				close(req)
-				close(sent)
 				return
 			case r := <-req:
 				r.Timestamp = time.Now()
@@ -114,14 +202,13 @@ func NewSender(c *icmp.PacketConn) (chan *EchoMessage, chan *EchoMessage, chan s
 		}
 	}()
 
-	return req, sent, done
+	return done
 }
 
-func NewReporter(sent chan *EchoMessage, res chan *EchoMessage, timeout time.Duration) (chan *Report, chan struct{}) {
+func NewReporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage, timeout time.Duration) chan struct{} {
 	done := make(chan struct{})
-	report := make(chan *Report, 1000)
 
-	list := make(map[string]*EchoMessage)
+	sentMsgs := make(map[string]*EchoMessage)
 
 	timeoutCheckInterval := time.Second
 
@@ -129,31 +216,30 @@ func NewReporter(sent chan *EchoMessage, res chan *EchoMessage, timeout time.Dur
 		for {
 			select {
 			case <-done:
-				close(report)
 				close(done)
 
 				return
 			case r := <-sent:
 				key := r.String()
-				_, ok := list[key]
+				_, ok := sentMsgs[key]
 				if ok {
 					report <- &Report{
 						"Sent duplicated message",
 						r,
 					}
 				} else {
-					list[key] = r
+					sentMsgs[key] = r
 				}
 			case r := <-res:
 				key := r.String()
-				_, ok := list[key]
+				_, ok := sentMsgs[key]
 				if !ok {
 					report <- &Report{
 						"Unsent message get received",
 						r,
 					}
 				} else {
-					delete(list, key)
+					delete(sentMsgs, key)
 					report <- &Report{
 						"Echo returned",
 						r,
@@ -161,15 +247,20 @@ func NewReporter(sent chan *EchoMessage, res chan *EchoMessage, timeout time.Dur
 				}
 			case <-time.After(timeoutCheckInterval):
 				// handle timeout
-				expired := extractExpired(list, timeout)
+				expired := extractExpired(sentMsgs, timeout)
 				if len(expired) > 0 {
-					fmt.Println(expired)
+					for i := range expired {
+						report <- &Report{
+							"Ping timeout",
+							expired[i],
+						}
+					}
 				}
 			}
 		}
 	}()
 
-	return report, done
+	return done
 }
 
 type Report struct {
@@ -178,17 +269,17 @@ type Report struct {
 }
 
 func extractExpired(list map[string]*EchoMessage, timeout time.Duration) []*EchoMessage {
-	expiredkeys := make([]string, 0)
+	var expiredkeys []string
 
+	now := time.Now()
+	timeoutNano := timeout.Nanoseconds()
 	for k, v := range list {
-		now := time.Now()
-		timeoutNano := timeout.Nanoseconds()
-		if !v.Timestamp.IsZero() && now.Sub(v.Timestamp).Nanoseconds() >= timeoutNano {
+		if now.Sub(v.Timestamp).Nanoseconds() >= timeoutNano {
 			expiredkeys = append(expiredkeys, k)
 		}
 	}
 
-	expired := make([]*EchoMessage, len(expiredkeys))
+	var expired []*EchoMessage
 	for i := range expiredkeys {
 		expired = append(expired, list[expiredkeys[i]])
 		delete(list, expiredkeys[i])
