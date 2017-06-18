@@ -2,84 +2,125 @@ package nettools
 
 import (
 	"errors"
+	"fmt"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
-	"log"
 	"net"
 	"time"
-	"fmt"
 )
 
-
-func NewSocket() (*icmp.PacketConn, error) {
+func NewSocket() *icmp.PacketConn {
 	c, err := icmp.ListenPacket("udp4", "")
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 
-	return c, nil
+	return c
 }
 
-func NewRequester(dest net.IP, interval time.Duration, send chan *EchoMessage) {
-	go func () {
+func NewRequester(send chan *EchoMessage, dest net.IP, interval time.Duration) chan struct{} {
+	done := make(chan struct{})
+	go func() {
 		m := NewEchoMessage(dest, 0)
 		for {
 			select {
+			case <-done:
+				close(done)
+				return
 			case <-time.After(interval):
 				send <- m
 				m = m.Next()
 			}
 		}
 	}()
+	return done
 }
 
-func NewReceiver(c *icmp.PacketConn, received chan *EchoMessage) {
+func receiveOneMessage(c *icmp.PacketConn, buf []byte) *icmp.Message {
+	c.SetReadDeadline(time.Now().Add(time.Second))
+	n, _, err := c.ReadFrom(buf)
+	if err != nil {
+		switch err := err.(type) {
+		case net.Error:
+			if err.Timeout() {
+				return nil
+			} else {
+				panic(err)
+			}
+		default:
+			panic(err)
+		}
+	}
+
+	rm, err := icmp.ParseMessage(ProtocolICMP, buf[:n])
+	if err != nil {
+		panic(err)
+	}
+
+	return rm
+}
+
+func NewListener(c *icmp.PacketConn, resBufSize int) (chan *EchoMessage, chan struct{}) {
+	done := make(chan struct{})
+	res := make(chan *EchoMessage, resBufSize)
+
 	go func() {
 		rb := make([]byte, 1500)
 		for {
-			n, peer, err := c.ReadFrom(rb)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			peerIP := peer.String()
-			peerIP = peerIP[:len(peerIP)-2]
-
-			rm, err := icmp.ParseMessage(ProtocolICMP, rb[:n])
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			if rm.Type == ipv4.ICMPTypeEchoReply {
-				r := BuildEchoMessageFromResponse(rm)
-				received<-r
+			select {
+			case <-done:
+				close(done)
+				close(res)
+				return
+			default:
+				rm := receiveOneMessage(c, rb)
+				if rm != nil && rm.Type == ipv4.ICMPTypeEchoReply {
+					r := BuildEchoMessageFromResponse(rm)
+					res <- r
+				}
 			}
 		}
 	}()
+
+	return res, done
 }
 
-func NewSender(c *icmp.PacketConn, send chan *EchoMessage, sent chan *EchoMessage) {
+func NewSender(c *icmp.PacketConn) (chan *EchoMessage, chan *EchoMessage, chan struct{}) {
+	done := make(chan struct{})
+	req := make(chan *EchoMessage, 1000)
+	sent := make(chan *EchoMessage, 1000)
+
 	go func() {
 		for {
 			select {
-			case r := <-send:
+			case <-done:
+				close(done)
+				close(req)
+				close(sent)
+				return
+			case r := <-req:
 				r.Timestamp = time.Now()
 				wm := r.ICMPMessage()
 				wb, err := wm.Marshal(nil)
 				if err != nil {
-					log.Fatal(err)
+					panic(err)
 				}
 
 				if _, err := c.WriteTo(wb, &net.UDPAddr{IP: r.IP}); err != nil {
 					panic(err)
 				}
-				sent<-r
+				sent <- r
 			}
 		}
 	}()
+
+	return req, sent, done
 }
 
-func NewReporter(sent chan *EchoMessage, received chan *EchoMessage, report chan *Report, timeout time.Duration) {
+func NewReporter(sent chan *EchoMessage, res chan *EchoMessage, timeout time.Duration) (chan *Report, chan struct{}) {
+	done := make(chan struct{})
+	report := make(chan *Report, 1000)
+
 	list := make(map[string]*EchoMessage)
 
 	timeoutCheckInterval := time.Second
@@ -87,30 +128,35 @@ func NewReporter(sent chan *EchoMessage, received chan *EchoMessage, report chan
 	go func() {
 		for {
 			select {
-			case req := <- sent:
-				key := req.String()
+			case <-done:
+				close(report)
+				close(done)
+
+				return
+			case r := <-sent:
+				key := r.String()
 				_, ok := list[key]
 				if ok {
-					report <- &Report {
+					report <- &Report{
 						"Sent duplicated message",
-						req,
+						r,
 					}
 				} else {
-					list[key] = req
+					list[key] = r
 				}
-			case res := <- received:
-				key := res.String()
+			case r := <-res:
+				key := r.String()
 				_, ok := list[key]
 				if !ok {
-					report <- &Report {
+					report <- &Report{
 						"Unsent message get received",
-						res,
+						r,
 					}
 				} else {
 					delete(list, key)
-					report <- &Report {
+					report <- &Report{
 						"Echo returned",
-						res,
+						r,
 					}
 				}
 			case <-time.After(timeoutCheckInterval):
@@ -122,30 +168,13 @@ func NewReporter(sent chan *EchoMessage, received chan *EchoMessage, report chan
 			}
 		}
 	}()
+
+	return report, done
 }
 
 type Report struct {
-	Text string
+	Text    string
 	Message *EchoMessage
-}
-
-func NewPinger(timeout time.Duration) (chan *EchoMessage, chan *Report) {
-	send := make(chan *EchoMessage, 100)
-	sent := make(chan *EchoMessage, 100)
-	received := make(chan *EchoMessage, 100)
-	report := make(chan *Report, 100)
-
-
-	c, err := NewSocket()
-	if err != nil {
-		panic(err)
-	}
-
-	NewReceiver(c, received)
-	NewSender(c, send, sent)
-	NewReporter(sent, received, report, timeout)
-
-	return send, report
 }
 
 func extractExpired(list map[string]*EchoMessage, timeout time.Duration) []*EchoMessage {
@@ -167,7 +196,6 @@ func extractExpired(list map[string]*EchoMessage, timeout time.Duration) []*Echo
 
 	return expired
 }
-
 
 const ProtocolICMP = 1
 const ProtocolIPv6ICMP = 58
