@@ -24,7 +24,7 @@ func TestNewRequester(t *testing.T) {
 }
 
 func TestNewListener(t *testing.T) {
-	c := icmpsocket()
+	c := icmpSocket()
 	defer c.Close()
 
 	res := make(chan *EchoReply, 1000)
@@ -35,7 +35,7 @@ func TestNewListener(t *testing.T) {
 }
 
 func TestNewSender(t *testing.T) {
-	c := icmpsocket()
+	c := icmpSocket()
 	defer c.Close()
 
 	req := make(chan *EchoRequest, 1000)
@@ -56,7 +56,7 @@ func TestNewSender(t *testing.T) {
 }
 
 func TestNewReporter(t *testing.T) {
-	c := icmpsocket()
+	c := icmpSocket()
 	defer c.Close()
 
 	req := make(chan *EchoRequest, 1000)
@@ -96,11 +96,28 @@ func TestNewReporter(t *testing.T) {
 	}
 }
 
-func TestPinger(t *testing.T) {
+func TestPinger_AddDest(t *testing.T) {
+	pinger := NewPinger(1000, 5*time.Second)
+
+	ip, _ := lookupIP("127.0.0.1")
+	err := pinger.AddDest(ip, 2*time.Second)
+	if err != nil {
+		t.Fail()
+	}
+
+	ip, _ = lookupIP("127.0.0.1")
+	err = pinger.AddDest(ip, 2*time.Second)
+	if err == nil {
+		t.Fail() // Should be failed
+	}
+}
+
+func TestPinger_Start(t *testing.T) {
 	pinger := NewPinger(1000, 5*time.Second)
 
 	ip, _ := lookupIP("127.0.0.1")
 	pinger.AddDest(ip, 2*time.Second)
+
 	ip, _ = lookupIP("127.0.0.2")
 	pinger.AddDest(ip, 4*time.Second)
 
@@ -118,3 +135,34 @@ func TestPinger(t *testing.T) {
 		}
 	}
 }
+
+func TestPinger_Start2(t *testing.T) {
+	pinger := NewPinger(1000, 5*time.Second)
+
+	ip, _ := lookupIP("127.0.0.1")
+	pinger.AddDest(ip, 1*time.Second)
+
+	ip, _ = lookupIP("8.8.8.8")
+	pinger.AddDest(ip, 2*time.Second)
+
+	ip, _ = lookupIP("8.8.4.4")
+	pinger.AddDest(ip, 3*time.Second)
+
+	ip, _ = lookupIP("www.naver.com")
+	pinger.AddDest(ip, 5*time.Second)
+
+	timer := time.After(100 * time.Second) // Long term test
+
+	report := pinger.Start()
+
+	for {
+		select {
+		case <-timer:
+			pinger.Stop()
+			return
+		case r := <-report:
+			fmt.Println(r)
+		}
+	}
+}
+

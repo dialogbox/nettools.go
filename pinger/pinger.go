@@ -48,7 +48,7 @@ func NewPinger(queueSize int, timeout time.Duration) *Pinger {
 }
 
 func (p *Pinger) Start() chan *Report {
-	p.c = icmpsocket()
+	p.c = icmpSocket()
 	p.stopSender = sender(p.c, p.req, p.sent)
 	p.stopReceiver = listener(p.c, p.res)
 	p.stopReporter = reporter(p.report, p.sent, p.res, p.timeout)
@@ -84,7 +84,7 @@ func (p *Pinger) AddDest(ip net.IP, interval time.Duration) error {
 		return fmt.Errorf("Duplicated address: %v", addr)
 	}
 
-	done := requester(p.req, ip, 1*time.Second)
+	done := requester(p.req, ip, interval)
 	p.requesters[addr] = done
 
 	return nil
@@ -105,7 +105,7 @@ func (p *Pinger) DeleteDest(ip net.IP) error {
 	return nil
 }
 
-func icmpsocket() *icmp.PacketConn {
+func icmpSocket() *icmp.PacketConn {
 	c, err := icmp.ListenPacket("udp4", "")
 	if err != nil {
 		panic(err)
