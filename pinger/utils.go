@@ -2,30 +2,34 @@ package pinger
 
 import (
 	"net"
-	"time"
-	"encoding/binary"
+	"errors"
 )
 
-func hash32to16(i uint32) uint16 {
-	return uint16((i >> 16) ^ ((i & 0xffff) * 7))
+func lookupIP(host string) (net.IP, error) {
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			return ip.To4(), nil
+		}
+	}
+
+	return nil, errors.New("no A or AAAA record or only have IPv6 IP")
 }
 
-func parsePayload(payload []byte) (net.IP, time.Time) {
-	var ip [4]byte
+func resolveHosts(hosts []string) []net.IP {
+	iplist := make([]net.IP, len(hosts))
+	for i := range hosts {
+		ip, err := lookupIP(hosts[i])
+		if err != nil {
+			panic(err)
+		}
+		iplist[i] = ip
+	}
 
-	copy(ip[:], payload[0:4])
-
-	ts := time.Unix(0, int64(binary.BigEndian.Uint64(payload[4:12])))
-
-	return net.IP(ip[:]), ts
-}
-
-func encodePayload(ip net.IP, ts time.Time) []byte {
-	payload := make([]byte, 12)
-
-	copy(payload[0:4], ip[12:16])
-	binary.BigEndian.PutUint64(payload[4:12], uint64(ts.UnixNano()))
-
-	return payload
+	return iplist
 }
 

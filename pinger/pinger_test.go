@@ -6,11 +6,11 @@ import (
 )
 
 func TestNewRequester(t *testing.T) {
-	ip, _ := LookupIPAddr("127.0.0.1")
+	ip, _ := lookupIP("127.0.0.1")
 	req := make(chan *EchoMessage, 1000)
 	defer close(req)
 
-	done := NewRequester(req, ip, 1*time.Second)
+	done := requester(req, ip, 1*time.Second)
 	time.Sleep(3 * time.Second)
 	done <- struct{}{}
 
@@ -23,18 +23,18 @@ func TestNewRequester(t *testing.T) {
 }
 
 func TestNewListener(t *testing.T) {
-	c := NewSocket()
+	c := icmpsocket()
 	defer c.Close()
 
 	res := make(chan *EchoMessage, 1000)
 	defer close(res)
 
-	done := NewListener(c, res)
+	done := listener(c, res)
 	done <- struct{}{}
 }
 
 func TestNewSender(t *testing.T) {
-	c := NewSocket()
+	c := icmpsocket()
 	defer c.Close()
 
 	req := make(chan *EchoMessage, 1000)
@@ -43,8 +43,8 @@ func TestNewSender(t *testing.T) {
 	sent := make(chan *EchoMessage, 1000)
 	defer close(sent)
 
-	ip, _ := LookupIPAddr("127.0.0.1")
-	done := NewSender(c, req, sent)
+	ip, _ := lookupIP("127.0.0.1")
+	done := sender(c, req, sent)
 	req <- NewEchoMessage(ip, 0)
 
 	s := <-sent
@@ -55,7 +55,7 @@ func TestNewSender(t *testing.T) {
 }
 
 func TestNewReporter(t *testing.T) {
-	c := NewSocket()
+	c := icmpsocket()
 	defer c.Close()
 
 	req := make(chan *EchoMessage, 1000)
@@ -70,13 +70,13 @@ func TestNewReporter(t *testing.T) {
 	report := make(chan *Report, 1000)
 	defer close(report)
 
-	doneSender := NewSender(c, req, sent)
-	doneListener := NewListener(c, res)
+	doneSender := sender(c, req, sent)
+	doneListener := listener(c, res)
 
-	ip, _ := LookupIPAddr("127.0.0.1")
-	doneRequester := NewRequester(req, ip, 1*time.Second)
+	ip, _ := lookupIP("127.0.0.1")
+	doneRequester := requester(req, ip, 1*time.Second)
 
-	done := NewReporter(report, sent, res, 5*time.Second)
+	done := reporter(report, sent, res, 5*time.Second)
 
 	timer := time.After(10 * time.Second)
 
@@ -98,9 +98,9 @@ func TestNewReporter(t *testing.T) {
 func TestPinger(t *testing.T) {
 	pinger := NewPinger(1000, 5*time.Second)
 
-	ip, _ := LookupIPAddr("127.0.0.1")
+	ip, _ := lookupIP("127.0.0.1")
 	pinger.AddDest(ip, 2*time.Second)
-	ip, _ = LookupIPAddr("127.0.0.2")
+	ip, _ = lookupIP("127.0.0.2")
 	pinger.AddDest(ip, 4*time.Second)
 
 	timer := time.After(10 * time.Second)

@@ -1,7 +1,6 @@
 package pinger
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -9,6 +8,9 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 )
+
+const ProtocolICMP = 1
+const ProtocolIPv6ICMP = 58
 
 type Pinger struct {
 	c *icmp.PacketConn
@@ -46,10 +48,10 @@ func NewPinger(queueSize int, timeout time.Duration) *Pinger {
 }
 
 func (p *Pinger) Start() chan *Report {
-	p.c = NewSocket()
-	p.stopSender = NewSender(p.c, p.req, p.sent)
-	p.stopReceiver = NewListener(p.c, p.res)
-	p.stopReporter = NewReporter(p.report, p.sent, p.res, p.timeout)
+	p.c = icmpsocket()
+	p.stopSender = sender(p.c, p.req, p.sent)
+	p.stopReceiver = listener(p.c, p.res)
+	p.stopReporter = reporter(p.report, p.sent, p.res, p.timeout)
 
 	p.started = true
 
@@ -82,7 +84,7 @@ func (p *Pinger) AddDest(ip net.IP, interval time.Duration) error {
 		return fmt.Errorf("Duplicated address: %v", addr)
 	}
 
-	done := NewRequester(p.req, ip, 1*time.Second)
+	done := requester(p.req, ip, 1*time.Second)
 	p.requesters[addr] = done
 
 	return nil
@@ -103,7 +105,7 @@ func (p *Pinger) DeleteDest(ip net.IP) error {
 	return nil
 }
 
-func NewSocket() *icmp.PacketConn {
+func icmpsocket() *icmp.PacketConn {
 	c, err := icmp.ListenPacket("udp4", "")
 	if err != nil {
 		panic(err)
@@ -112,7 +114,7 @@ func NewSocket() *icmp.PacketConn {
 	return c
 }
 
-func NewRequester(send chan *EchoMessage, dest net.IP, interval time.Duration) chan struct{} {
+func requester(send chan *EchoMessage, dest net.IP, interval time.Duration) chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		m := NewEchoMessage(dest, 0)
@@ -154,7 +156,7 @@ func receiveOneMessage(c *icmp.PacketConn, buf []byte) *icmp.Message {
 	return rm
 }
 
-func NewListener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
+func listener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
 	done := make(chan struct{})
 
 	go func() {
@@ -168,7 +170,9 @@ func NewListener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
 				rm := receiveOneMessage(c, rb)
 				if rm != nil && rm.Type == ipv4.ICMPTypeEchoReply {
 					r := BuildEchoMessageFromResponse(rm)
-					res <- r
+					if r != nil {
+						res <- r
+					}
 				}
 			}
 		}
@@ -177,7 +181,7 @@ func NewListener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
 	return done
 }
 
-func NewSender(c *icmp.PacketConn, req chan *EchoMessage, sent chan *EchoMessage) chan struct{} {
+func sender(c *icmp.PacketConn, req chan *EchoMessage, sent chan *EchoMessage) chan struct{} {
 	done := make(chan struct{})
 
 	go func() {
@@ -205,7 +209,7 @@ func NewSender(c *icmp.PacketConn, req chan *EchoMessage, sent chan *EchoMessage
 	return done
 }
 
-func NewReporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage, timeout time.Duration) chan struct{} {
+func reporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage, timeout time.Duration) chan struct{} {
 	done := make(chan struct{})
 
 	sentMsgs := make(map[string]*EchoMessage)
@@ -263,11 +267,6 @@ func NewReporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMess
 	return done
 }
 
-type Report struct {
-	Text    string
-	Message *EchoMessage
-}
-
 func extractExpired(list map[string]*EchoMessage, timeout time.Duration) []*EchoMessage {
 	var expiredkeys []string
 
@@ -286,33 +285,4 @@ func extractExpired(list map[string]*EchoMessage, timeout time.Duration) []*Echo
 	}
 
 	return expired
-}
-
-const ProtocolICMP = 1
-const ProtocolIPv6ICMP = 58
-
-func LookupIPAddr(host string) (net.IP, error) {
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, ip := range ips {
-		return ip, nil
-	}
-
-	return nil, errors.New("no A or AAAA record")
-}
-
-func ResolveHostList(hosts []string) []net.IP {
-	iplist := make([]net.IP, len(hosts))
-	for i := range hosts {
-		ip, err := LookupIPAddr(hosts[i])
-		if err != nil {
-			panic(err)
-		}
-		iplist[i] = ip
-	}
-
-	return iplist
 }
