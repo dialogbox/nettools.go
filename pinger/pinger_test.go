@@ -1,13 +1,14 @@
 package pinger
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
 
 func TestNewRequester(t *testing.T) {
 	ip, _ := lookupIP("127.0.0.1")
-	req := make(chan *EchoMessage, 1000)
+	req := make(chan *EchoRequest, 1000)
 	defer close(req)
 
 	done := requester(req, ip, 1*time.Second)
@@ -26,7 +27,7 @@ func TestNewListener(t *testing.T) {
 	c := icmpsocket()
 	defer c.Close()
 
-	res := make(chan *EchoMessage, 1000)
+	res := make(chan *EchoReply, 1000)
 	defer close(res)
 
 	done := listener(c, res)
@@ -37,15 +38,15 @@ func TestNewSender(t *testing.T) {
 	c := icmpsocket()
 	defer c.Close()
 
-	req := make(chan *EchoMessage, 1000)
+	req := make(chan *EchoRequest, 1000)
 	defer close(req)
 
-	sent := make(chan *EchoMessage, 1000)
+	sent := make(chan *EchoRequest, 1000)
 	defer close(sent)
 
 	ip, _ := lookupIP("127.0.0.1")
 	done := sender(c, req, sent)
-	req <- NewEchoMessage(ip, 0)
+	req <- NewEchoRequest(ip, 0)
 
 	s := <-sent
 	done <- struct{}{}
@@ -58,13 +59,13 @@ func TestNewReporter(t *testing.T) {
 	c := icmpsocket()
 	defer c.Close()
 
-	req := make(chan *EchoMessage, 1000)
+	req := make(chan *EchoRequest, 1000)
 	defer close(req)
 
-	sent := make(chan *EchoMessage, 1000)
+	sent := make(chan *EchoRequest, 1000)
 	defer close(sent)
 
-	res := make(chan *EchoMessage, 1000)
+	res := make(chan *EchoReply, 1000)
 	defer close(res)
 
 	report := make(chan *Report, 1000)
@@ -90,7 +91,7 @@ func TestNewReporter(t *testing.T) {
 
 			return
 		case r := <-report:
-			t.Logf("Report : %v\n", r)
+			fmt.Printf("Report : %v\n", r)
 		}
 	}
 }
@@ -113,8 +114,7 @@ func TestPinger(t *testing.T) {
 			pinger.Stop()
 			return
 		case r := <-report:
-			t.Logf("Report : %v\n", r)
+			fmt.Println(r)
 		}
 	}
-
 }

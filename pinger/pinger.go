@@ -15,9 +15,9 @@ const ProtocolIPv6ICMP = 58
 type Pinger struct {
 	c *icmp.PacketConn
 
-	req    chan *EchoMessage
-	res    chan *EchoMessage
-	sent   chan *EchoMessage
+	req    chan *EchoRequest
+	res    chan *EchoReply
+	sent   chan *EchoRequest
 	report chan *Report
 
 	stopSender   chan struct{}
@@ -38,9 +38,9 @@ func NewPinger(queueSize int, timeout time.Duration) *Pinger {
 		requesters: make(map[string]chan struct{}),
 		timeout:    timeout,
 		queueSize:  queueSize,
-		req:        make(chan *EchoMessage, queueSize),
-		res:        make(chan *EchoMessage, queueSize),
-		sent:       make(chan *EchoMessage, queueSize),
+		req:        make(chan *EchoRequest, queueSize),
+		res:        make(chan *EchoReply, queueSize),
+		sent:       make(chan *EchoRequest, queueSize),
 		report:     make(chan *Report, queueSize),
 	}
 
@@ -114,10 +114,10 @@ func icmpsocket() *icmp.PacketConn {
 	return c
 }
 
-func requester(send chan *EchoMessage, dest net.IP, interval time.Duration) chan struct{} {
+func requester(send chan *EchoRequest, dest net.IP, interval time.Duration) chan struct{} {
 	done := make(chan struct{})
 	go func() {
-		m := NewEchoMessage(dest, 0)
+		m := NewEchoRequest(dest, 0)
 		for {
 			select {
 			case <-done:
@@ -156,7 +156,7 @@ func receiveOneMessage(c *icmp.PacketConn, buf []byte) *icmp.Message {
 	return rm
 }
 
-func listener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
+func listener(c *icmp.PacketConn, res chan *EchoReply) chan struct{} {
 	done := make(chan struct{})
 
 	go func() {
@@ -169,7 +169,7 @@ func listener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
 			default:
 				rm := receiveOneMessage(c, rb)
 				if rm != nil && rm.Type == ipv4.ICMPTypeEchoReply {
-					r := BuildEchoMessageFromResponse(rm)
+					r := NewEchoReplyFromResponse(rm)
 					if r != nil {
 						res <- r
 					}
@@ -181,7 +181,7 @@ func listener(c *icmp.PacketConn, res chan *EchoMessage) chan struct{} {
 	return done
 }
 
-func sender(c *icmp.PacketConn, req chan *EchoMessage, sent chan *EchoMessage) chan struct{} {
+func sender(c *icmp.PacketConn, req chan *EchoRequest, sent chan *EchoRequest) chan struct{} {
 	done := make(chan struct{})
 
 	go func() {
@@ -191,7 +191,7 @@ func sender(c *icmp.PacketConn, req chan *EchoMessage, sent chan *EchoMessage) c
 				close(done)
 				return
 			case r := <-req:
-				r.Timestamp = time.Now()
+				r.RequestTime = time.Now()
 				wm := r.ICMPMessage()
 				wb, err := wm.Marshal(nil)
 				if err != nil {
@@ -209,10 +209,10 @@ func sender(c *icmp.PacketConn, req chan *EchoMessage, sent chan *EchoMessage) c
 	return done
 }
 
-func reporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage, timeout time.Duration) chan struct{} {
+func reporter(report chan *Report, sent chan *EchoRequest, res chan *EchoReply, timeout time.Duration) chan struct{} {
 	done := make(chan struct{})
 
-	sentMsgs := make(map[string]*EchoMessage)
+	sentMsgs := make(map[string]*EchoRequest)
 
 	timeoutCheckInterval := time.Second
 
@@ -224,30 +224,30 @@ func reporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage
 
 				return
 			case r := <-sent:
-				key := r.String()
-				old, ok := sentMsgs[key]
+				key := r.HashKey()
+				_, ok := sentMsgs[key]
 				if ok {
 					report <- &Report{
-						"Sent duplicated message",
+						REPORT_EVENT_DUPLICATED_REQUEST,
 						r,
-						old,
+						nil,
 					}
 				} else {
 					sentMsgs[key] = r
 				}
 			case r := <-res:
-				key := r.String()
+				key := r.HashKey()
 				old, ok := sentMsgs[key]
 				if !ok {
 					report <- &Report{
-						"Unsent message get received",
+						REPORT_EVENT_UNKNOWN_REPLY,
 						nil,
 						r,
 					}
 				} else {
 					delete(sentMsgs, key)
 					report <- &Report{
-						"Echo returned",
+						REPORT_EVENT_ECHO_RECEIVED,
 						old,
 						r,
 					}
@@ -258,7 +258,7 @@ func reporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage
 				if len(expired) > 0 {
 					for i := range expired {
 						report <- &Report{
-							"Ping timeout",
+							REPORT_EVENT_PACKET_LOSS,
 							expired[i],
 							nil,
 						}
@@ -271,18 +271,18 @@ func reporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage
 	return done
 }
 
-func extractExpired(list map[string]*EchoMessage, timeout time.Duration) []*EchoMessage {
+func extractExpired(list map[string]*EchoRequest, timeout time.Duration) []*EchoRequest {
 	var expiredkeys []string
 
 	now := time.Now()
 	timeoutNano := timeout.Nanoseconds()
 	for k, v := range list {
-		if now.Sub(v.Timestamp).Nanoseconds() >= timeoutNano {
+		if now.Sub(v.RequestTime).Nanoseconds() >= timeoutNano {
 			expiredkeys = append(expiredkeys, k)
 		}
 	}
 
-	var expired []*EchoMessage
+	var expired []*EchoRequest
 	for i := range expiredkeys {
 		expired = append(expired, list[expiredkeys[i]])
 		delete(list, expiredkeys[i])
