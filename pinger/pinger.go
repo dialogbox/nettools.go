@@ -225,27 +225,30 @@ func reporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage
 				return
 			case r := <-sent:
 				key := r.String()
-				_, ok := sentMsgs[key]
+				old, ok := sentMsgs[key]
 				if ok {
 					report <- &Report{
 						"Sent duplicated message",
 						r,
+						old,
 					}
 				} else {
 					sentMsgs[key] = r
 				}
 			case r := <-res:
 				key := r.String()
-				_, ok := sentMsgs[key]
+				old, ok := sentMsgs[key]
 				if !ok {
 					report <- &Report{
 						"Unsent message get received",
+						nil,
 						r,
 					}
 				} else {
 					delete(sentMsgs, key)
 					report <- &Report{
 						"Echo returned",
+						old,
 						r,
 					}
 				}
@@ -257,6 +260,7 @@ func reporter(report chan *Report, sent chan *EchoMessage, res chan *EchoMessage
 						report <- &Report{
 							"Ping timeout",
 							expired[i],
+							nil,
 						}
 					}
 				}

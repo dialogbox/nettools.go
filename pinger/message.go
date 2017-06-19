@@ -11,8 +11,9 @@ import (
 )
 
 type Report struct {
-	Text    string
-	Message *EchoMessage
+	Text           string
+	RequestMessage *EchoMessage
+	ReplyMessage   *EchoMessage
 }
 
 type EchoMessage struct {
@@ -103,4 +104,3 @@ func encodePayload(ip net.IP, ts time.Time) []byte {
 
 	return payload
 }
-
